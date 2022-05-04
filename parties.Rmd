@@ -1,0 +1,344 @@
+---
+title: "Parties and After Parties in NYC"
+author: "iair kleiman"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+## Intro
+
+The idea of this script is to be able to identify the party 
+and after party spots in NYC based on the data provided by Uber to fivethirtyeight.
+
+This data provides the pickup coordinates of all the Uber trips during most of 2014.
+
+Based on this, I will cluster the data and identify the most popular spots in NYC over the weekends, in 2 day segments.
+
+1. 12am to 3am (for departing a normal party spot)
+2. 3 am to 6am (for departing an afterparty spot)
+
+
+
+```{r Package Loading, include=FALSE}
+#library(tmap)
+library(leaflet)
+# library(rMaps)
+library(maps)
+library(rgdal)
+library(sp)
+library(RColorBrewer)
+library(lubridate)
+library(tidyverse)
+
+```
+
+```{r File Loading, message=FALSE, error=FALSE,  include=FALSE}
+uber_raw_data_apr14 <- read_csv("uber-raw-data-apr14.csv")
+uber_raw_data_may14 <- read_csv("uber-raw-data-may14.csv")
+uber_raw_data_jun14 <- read_csv("uber-raw-data-jun14.csv")
+uber_raw_data_jul14 <- read_csv("uber-raw-data-jul14.csv")
+uber_raw_data_aug14 <- read_csv("uber-raw-data-aug14.csv")
+uber_raw_data_sep14 <- read_csv("uber-raw-data-sep14.csv")
+
+```
+
+```{r Polygon Tribble, include=FALSE}
+p_manhattan <- tribble(
+  ~Lat, ~Lon,
+  40.88, -73.93,
+  40.753, -74.02,
+  40.695, -74.02,
+  40.71, -73.97,
+  40.74, -73.965,
+  40.793, -73.914,
+  40.81, -73.93,
+  40.835, -73.934,
+  40.87, -73.909) %>% 
+    mutate(Borough = "Manhattan")
+
+p_bronx <- tribble(
+  ~Lat, ~Lon,
+  40.793, -73.914,
+  40.81, -73.93,
+  40.835, -73.934,
+  40.87, -73.909,
+  40.88, -73.93,
+  40.918, -73.92,
+  40.875, -73.75,
+  40.80, -73.7886) %>% 
+    mutate(Borough = "Bronx")
+
+p_queens <-  tribble(
+  ~Lat, ~Lon,
+  40.74, -73.965,
+  40.793, -73.914,
+  40.80, -73.788,
+  40.75, -73.7,
+  40.576, -73.735,
+  40.53, -73.967,
+  40.558, -73.955,
+  40.59, -73.836,
+  40.695, -73.87,
+  40.68, -73.90,
+  40.729, -73.93) %>% 
+        mutate(Borough = "Queens")
+
+p_brooklyn <-  tribble(
+  ~Lat, ~Lon,
+  40.74, -73.965,
+  40.71, -73.97,
+  40.695, -74.02,
+  40.65, -74.05,
+  40.55, -74.05,
+  40.558, -73.955,
+  40.59, -73.836,
+  40.695, -73.87,
+  40.68, -73.90,
+  40.729, -73.93) %>% 
+        mutate(Borough = "Brooklyn")
+
+p_staten <-  tribble(
+  ~Lat, ~Lon,
+  40.65, -74.05,
+  40.55, -74.05,
+  40.5, -74.26,
+  40.645, -74.19) %>% 
+        mutate(Borough = "Staten Island")
+
+NY_poly <- bind_rows(p_manhattan, p_bronx, p_queens, p_brooklyn, p_staten) %>%  
+    group_by(Borough) %>%
+    do(poly=select(., Lat, Lon) %>% Polygon()) %>%
+    rowwise() %>%
+    do(polys=Polygons(list(.$poly),.$Borough)) %>%
+    {SpatialPolygons(.$polys)}
+
+proj4string(NY_poly) = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+
+df<- data.frame(id = getSpPPolygonsIDSlots(NY_poly))
+row.names(df) <- getSpPPolygonsIDSlots(NY_poly)
+
+NY_polyDF = SpatialPolygonsDataFrame(NY_poly, data= df)
+boundaries <- NY_polyDF
+
+
+```
+
+
+
+
+```{r, message=FALSE, error=FALSE, include=FALSE}
+
+# uber_raw_2014 <- bind_rows(uber_raw_data_apr14)
+
+uber_raw_2014 <- bind_rows(uber_raw_data_apr14, uber_raw_data_may14,     uber_raw_data_jun14, uber_raw_data_jul14, uber_raw_data_aug14, uber_raw_data_sep14)
+
+rm(uber_raw_data_apr14, uber_raw_data_may14,     uber_raw_data_jun14, uber_raw_data_jul14, uber_raw_data_aug14, uber_raw_data_sep14)
+gc() #memory cleaning
+
+uber_raw_2014 <- uber_raw_2014 %>% mutate(
+    `Date/Time` = mdy_hms(`Date/Time`))
+
+coord <- uber_raw_2014  
+coordinates(coord) = ~ Lat + Lon
+proj4string(coord) <- proj4string(boundaries)
+# proj4string(coord) <- CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+coord <- spTransform(coord, proj4string(boundaries))
+    
+coord_over_neibourhood <- over(coord, boundaries)
+
+uber_raw_2014_neigh <- bind_cols(uber_raw_2014, coord_over_neibourhood) 
+
+
+```
+```{r}
+uber_raw_2014
+```
+```{r}
+uber_raw_2014_neigh
+```
+
+
+```{r,  message=FALSE, error=FALSE, include=FALSE}
+uber_raw_2014 <- uber_raw_2014_neigh%>%
+    rename(Borough = id) %>% 
+    filter(!is.na(Borough)) 
+
+rm(uber_raw_2014_neigh, uber_2014_out, coord_over_neibourhood)
+gc()
+```
+
+```{r}
+uber_raw_2014
+```
+
+```{r Coordinates and Projections, include=FALSE}
+
+uber_utm <- uber_raw_2014 
+
+coordinates(uber_utm) <- c("Lon", "Lat")
+proj4string(uber_utm) <- CRS("+proj=longlat +datum=WGS84")  ## for example
+
+res <- spTransform(uber_utm, CRS("+proj=utm +zone=18 ellps=WGS84"))
+```
+```{r}
+head(res)
+```
+```{r}
+head(uber_utm)
+```
+```{r}
+head(uber_raw_2014)
+```
+
+###  Trick to Cluster Data
+
+When trying to cluster geo data, the fist idea may be to use Hierarchical Clustering.  To do this you have to make a distance matrix first.  Because 2014 had more the 4 million data points, we are talking about a distance matrix of 4 million by 4 million rows!!!! I don't have that much memory.
+
+So instead what I did was to project the coordinates to UTM (in meters) and then cluster data in a 50x50 meters blocks.  Then tally how the points inside a block.
+
+50 by 50 meters  is about (164 feet by 164 feet) that's about a quarter of the length of a New York block (the long side, from avenue to avenue).  I think is a good cluster size.
+
+```{r Uber_UTM, include=FALSE}
+uber_utm <- data.frame(uber_raw_2014$Lon, uber_raw_2014$Lat,
+                            res$Lon, res$Lat, 
+                            res$`Date/Time`, 
+                            res$Borough) %>% 
+    mutate(Lon = uber_raw_2014.Lon,
+           Lat = uber_raw_2014.Lat,
+           Lon_utm = res.Lon, 
+           Lat_utm = res.Lat,
+           `Date/Time` = res..Date.Time. ,
+           Borough = res.Borough) %>% 
+    select(Lon:Borough) %>% 
+    mutate(Lon50m = Lon_utm %/% 50,
+           Lat50m = Lat_utm %/% 50) %>% 
+    group_by(Lon50m, Lat50m) %>% 
+    mutate(Lon = mean(Lon),
+           Lat = mean(Lat),
+           Lon_utm = mean(Lon_utm),
+           Lat_utm = mean(Lat_utm)) %>% ungroup() %>% 
+    mutate(
+        Day_of_Month = day(`Date/Time`),
+        Month = month(`Date/Time`),
+        Year = year(`Date/Time`),
+        Hour = hour(`Date/Time`),
+        Weekday = wday(`Date/Time`, label = TRUE)) %>%
+    mutate(Day_Segment = Hour %/% 3 * 3) %>%
+    mutate(Day_Segment = if_else(Day_Segment == 0, "00-03",
+                   if_else(Day_Segment == 3, "03-06", 
+                           if_else(Day_Segment == 6, "06-09",
+                                   if_else(Day_Segment == 9, "09-12",
+                                           if_else(Day_Segment == 12, "12-15",
+            if_else(Day_Segment == 15, "15-18",
+                    if_else(Day_Segment == 18, "18-21", "21-24")))))))) 
+
+
+```
+```{r}
+head(uber_utm)
+nrow(uber_utm)
+```
+```{r}
+nrow(uber_utm$Lon)
+nrow(uber_utm$Lat)
+nrow(uber_utm$Weekday)
+nrow(uber_utm$Day_Segment)
+uber_utmprova = cbind.data.frame(uber_utm$Lon,uber_utm$Lat,uber_utm$Weekday,uber_utm$Day_Segment)
+head(uber_utmprova)
+```
+
+
+### Party & After Party Data Frames
+
+I'm going to make a couple of assumptions
+
+1. The party Weekend Extends from Thurday to Sunday
+2. People leave party places between 12am and 3 am (so actually, party Weekdays are Fri-Sun)
+3. People leave after parties between 3am and 6am Thurday to Saturday (actually, Fri-Sun)
+
+```{r}
+colnames(uber_utmprova) = c("Lon","Lat","Weekday","Day_Segment")
+
+Party_place <- uber_utm %>% 
+    filter( Day_Segment %in% c("00-03"),
+            Weekday %in% c ("sab", "dom", "lun")) %>% 
+    group_by(Lon, Lat) %>% 
+    tally() %>% 
+    arrange(desc(n))
+
+nrow(Party_place)
+```
+
+## Party
+
+There were 3 main party spots in New York.  The first one was the Meat Packing District / Chelsea, the second one was East Village/Lower East Side and the third one is in Williamsburg.
+
+I'm going to zoom in on those 3 Neighborhoods, and mark the pickup spots.  Maybe is useful for someone who lives or travels frequently to NYC
+
+```{r Party Maps, error=FALSE, message=FALSE}
+
+
+
+
+plot_party <- Party_place %>% 
+    head(30) %>% 
+    leaflet() %>%
+    addTiles %>%
+    addProviderTiles("Hydda.Full") %>%
+    setView(lng = -73.98, lat= 40.733, zoom = 13) %>% 
+    addMarkers()  
+plot_party
+```
+
+### Party - Chelsea and Meatpacking District
+
+There is a big cluster of pickup spots between 12th St to 14th St and from Hudson to Washington St.
+
+1. 16th St and 9th Av
+2. Both Corners of 10Av and 17 and 18 St
+3. Jane St and West St
+4. 14th St and 8th Av
+
+```{r Party Chelsea, error=FALSE, message=FALSE, echo=FALSE}
+plot_party <- Party_place %>% 
+    head(30) %>% 
+    leaflet() %>%
+    addTiles %>%
+    setView(lng = -74.004, lat= 40.7415, zoom = 15) %>% 
+    addMarkers()  
+plot_party
+```
+
+
+### Party - East Village and Lower East Side
+
+There are 2 well defined clusters
+
+1. Between Houston and Delancy Street and between Bowey and Ludlow St
+2. Between Broadway and Lafayette and betwen Bond and 4th Street
+
+```{r Party Downtown, error=FALSE, message=FALSE, echo=FALSE}
+plot_downtown <- Party_place %>% 
+    head(30) %>% 
+    leaflet() %>%
+    addTiles() %>%
+    addProviderTiles("Hydda.Full") %>%
+    setView(lng = -73.993, lat= 40.724, zoom = 15) %>% 
+    addMarkers()  
+plot_downtown
+```
+
+
+### Williamsburg
+
+```{r Party Brooklyn, error=FALSE, message=FALSE, echo=FALSE}
+plot_brooklyn <- Party_place %>% 
+    head(30) %>% 
+    leaflet() %>%
+    addTiles() %>%
+    addProviderTiles("Hydda.Full") %>%
+    setView(lng = -73.957, lat= 40.722, zoom = 15) %>% 
+    addMarkers()  
+plot_brooklyn
+```

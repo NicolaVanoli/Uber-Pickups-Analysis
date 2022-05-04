@@ -1,0 +1,448 @@
+---
+title: "Uber pickups in NYC analysis"
+author: "Nicola Vanoli"
+date: "24/5/2020"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Motivation and Introduction
+
+The city of New York is without any doubt one of the most chaotic and busy cities in the world: many citizens do not own a car and the public means of transport are their only way to travel.
+In the last decade a new ride-hailing company, called **Uber**, has established itself on the transport market and has started to offer new services such as Uber Eats (food delivery system) and other micromobility systems with electric bikes and scooters.
+
+In this work we try to give a visualization of the uber pickup system in NYC, by analyzing the times the services were delivered, the duration of trips and the starting and ending points.
+
+The goal of this report is trying to track the habits of the newyorkers: what is the time of day when uber services are most in demand? What about the month? How long does in average a trip last? Can we guess where a party occurred from our data?
+
+With the help of our dataset, we will be able to rise hypothesis that can answer these and other questions.
+
+# Data preparation
+
+The dataset we used can be found at https://www.kaggle.com/fivethirtyeight/uber-pickups-in-new-york-city.
+
+Once the dataset is downloaded, we can start prepare it for its analysis.
+In this work I only focus on the data collected in the year 2014 by Uber: since the dataset we want to use is split into different files, firstly I have to unify them in a single dataset.
+
+Make sure to have the ".csv" files in the same working directory of the project, otherwise an error will be raised.
+
+```{r dataset creation}
+#setwd("C:/Users/39339/Desktop/Analisi Dati/project/Uber-dataset") # specific for each user
+apr <- read.csv("uber-raw-data-apr14.csv")
+may <- read.csv("uber-raw-data-may14.csv")
+jun <- read.csv("uber-raw-data-jun14.csv")
+jul <- read.csv("uber-raw-data-jul14.csv")
+aug <- read.csv("uber-raw-data-aug14.csv")
+sep <- read.csv("uber-raw-data-sep14.csv")
+
+# single dataset creation
+data14 <- rbind(apr,may,jun,jul,aug,sep)
+
+head(data14)
+
+# number of rows
+nrow(data14)
+```
+```{r,include=FALSE,message=FALSE}
+rm(apr,may,jun,jul,aug,sep)
+gc()
+```
+
+As we can see from the above table the dataset is charactherized by 4534327 observations, each one consisting of 4 parameters: Date&Time, Latitude, Longitude and base location.
+
+The first variable contains a lot of informations (day, month and hour of the trip): let us split it into new variables.
+
+```{r package loading, message=FALSE, warning=FALSE}
+#loading packages we use in this project
+
+# we use the package "lubridate" to separate day/month/year
+library(lubridate)
+
+#load library to summarize
+library(dplyr)
+
+#loading libraries for better plot
+library(scales)
+library(ggplot2)
+library(gridExtra)
+
+#loading spatial libraries
+library(maps)
+library(rgdal)
+library(sp)
+library(leaflet)
+
+```
+
+```{r variable creation}
+data14$Date.Time <- as.POSIXct(data14$Date.Time, format = "%m/%d/%Y %H:%M:%S")
+data14$Time <- format(as.POSIXct(data14$Date.Time, format = "%m/%d/%Y %H:%M:%S"), format="%H:%M:%S")
+
+# we now divide the first variable into multiple ones
+data14$Date.Time <- ymd_hms(data14$Date.Time)
+data14$day <- factor(day(data14$Date.Time))
+data14$month <- factor(month(data14$Date.Time,label = TRUE))
+data14$dayofweek <- factor(wday(data14$Date.Time, label = TRUE))
+
+data14$hour <- factor(hour(hms(data14$Time)))
+
+data14 <- select(data14,- Base)
+uber_raw_2014 = data14 #to be used later
+head(data14)
+```
+The new dataset has now 8 variables: this will help us in our analysis.
+
+# Data Visualization
+
+We are now ready to visualize the information contained in our Dataset. Let's explore the trips distribution by hours in a day.
+
+## Trip Distribution by Hours and Month
+In this paragraph we are interested in showing how the number of uber trips change throughout the day, and how it changes in relation to the month.
+
+```{r month_hour}
+month_hour = dplyr::summarize(group_by(data14,month, hour),Total = n())
+
+ggplot(month_hour, aes(hour, Total, fill = month)) + 
+scale_fill_manual(values = c("#92C5DE", "#D1E5F0","#FDDBC7" ,"#F4A582", "#D6604D", "#B2182B"),
+                  name = "Month") + geom_bar( stat = "identity") + ggtitle("Trips by Hour and Month") +scale_y_continuous(labels = comma)
+```
+
+As we can see from the above graph, the most intense hours for uber drivers are sround 17-18 PM, and it looks like this trend is mantained during all six observations' months.
+
+we may assume that this peak is related to the fact that people usually finish working around that time, and since many people in NYC do not own a car, they have to relief on public transoprt systems.
+
+We will later investigate this hypothesis by plotting an heat map.
+
+We are now interested in see what is the most productive month in terms of Uber pickups.
+
+```{r month total}
+month_group <-dplyr::summarize(group_by(data14,month),Total = n())
+ggplot( month_group, aes(month, Total, fill = month)) + 
+geom_bar( stat = "identity") +
+ggtitle("Trips by Month") +
+theme(legend.position = "none") +
+scale_y_continuous(labels = comma) + scale_fill_manual(values = c("#92C5DE", "#D1E5F0","#FDDBC7"            ,"#F4A582", "#D6604D", "#B2182B"   ))
+```
+
+Interestingly, the months of august and september are the most profitable for uber drivers, with almost a x2 number of trips compared too april.
+This could be due to the fact that in these periods there is the highest number of tourists.
+To support this hypothesis, let us track the Uber pickups by day of the week and month. 
+By doing that, we show what are the busiest days for Uber drivers in comparison to a specific month.
+
+
+
+```{r days-month plots}
+day_group = dplyr::summarize(group_by(data14,month, dayofweek),Total = n())
+
+plt1 = ggplot(filter(day_group, month == levels(data14$month)[1]), aes( dayofweek, Total)) +
+  geom_bar( stat = "identity",fill = "#006600", col = "red") + ggtitle("April") +
+scale_y_continuous(labels = comma) 
+
+plt2 = ggplot(filter(day_group, month == levels(data14$month)[2]), aes( dayofweek, Total)) +
+  geom_bar( stat = "identity",fill = "#006600", col = "red") + ggtitle("May") +
+scale_y_continuous(labels = comma) 
+
+plt3 = ggplot(filter(day_group, month == levels(data14$month)[3]), aes( dayofweek, Total)) +
+  geom_bar( stat = "identity",fill = "#006600", col = "red") + ggtitle("June") +
+scale_y_continuous(labels = comma) 
+
+plt4 = ggplot(filter(day_group, month == levels(data14$month)[4]), aes( dayofweek, Total)) +
+  geom_bar( stat = "identity",fill = "#006600", col = "red") + ggtitle("July") +
+scale_y_continuous(labels = comma) 
+
+plt5 = ggplot(filter(day_group, month == levels(data14$month)[5]), aes( dayofweek, Total)) +
+  geom_bar( stat = "identity",fill = "#006600", col = "red") + ggtitle("August") +
+scale_y_continuous(labels = comma) 
+
+plt6 = ggplot(filter(day_group, month == levels(data14$month)[6]), aes( dayofweek, Total)) +
+  geom_bar( stat = "identity",fill = "#006600", col = "red") + ggtitle("September") +
+scale_y_continuous(labels = comma)
+
+grid.arrange(plt1, plt2, plt3, plt4, plt5, plt6, ncol=2)
+
+
+```
+```{r,include=FALSE,message=FALSE}
+rm(plt1,plt2,plt3,plt4,plt5,plt6)
+gc()
+```
+
+From the previous graphs, it seems like the tourists hypthesis may be partially true: In fact, especially in August and september, the "Saturday" column counts about 150.000 units, while during the other months the number of Uber pickups on Saturdays was significantly lower compared to the other days of the week.
+
+## Heat Map of Trips by Hour
+
+We previously discussed how the "work hypothesis" could explain the trips' peak at 17-18 PM.
+Let us draw a heat map by hour and day
+
+```{r heat map}
+day_hour = dplyr::summarize(group_by(data14,day, hour),Total = n())
+
+ggplot(day_hour, aes(day, hour, fill = Total)) +
+            geom_tile(color = "white") +
+              ggtitle("Heat Map by Hour and Day")
+
+```
+
+From the above map two brighter horizontal sripes are distinguishable: the first one is around 17-18 PM and remarks what we discussed previously, while the other one is around 7-8 AM, the typical hours when people go to work.
+We can now assume that our hypothesis is valid and might be the right explanation for this phenomenon.
+
+
+# Public Events in NYC with Clustering
+In this chapter we try to spot private and public events (i.e. parties) that occured during the observations period in NYC.
+
+In order to do that, we perform density clustering on a specific subset of the original dataset.
+Before coding, we make a couple of assumptions that will significantly reduce the size of the dataset:
+
+1. The party Weekend extends from Friday night to Sunday
+2. People leave party places between 12 PM and 3 AM
+
+## Splitting data in boroughs
+Before clustering, we associate to each data a specific borough: in NYC we count 5 boroughs that are Manhattan, Bronx, Queens, Brooklyn and Staten Island.
+That is because we want to cluster indipendently inside each borough instead of clustering on the whole NYC area at once.
+
+```{r Polygon Tribble, message=FALSE,warning=FALSE}
+
+#building borough's polygons
+
+p_manhattan <- tribble(
+  ~Lat, ~Lon,
+  40.88, -73.93,
+  40.753, -74.02,
+  40.695, -74.02,
+  40.71, -73.97,
+  40.74, -73.965,
+  40.793, -73.914,
+  40.81, -73.93,
+  40.835, -73.934,
+  40.87, -73.909) %>% 
+    mutate(Borough = "Manhattan")
+
+p_bronx <- tribble(
+  ~Lat, ~Lon,
+  40.793, -73.914,
+  40.81, -73.93,
+  40.835, -73.934,
+  40.87, -73.909,
+  40.88, -73.93,
+  40.918, -73.92,
+  40.875, -73.75,
+  40.80, -73.7886) %>% 
+    mutate(Borough = "Bronx")
+
+p_queens <-  tribble(
+  ~Lat, ~Lon,
+  40.74, -73.965,
+  40.793, -73.914,
+  40.80, -73.788,
+  40.75, -73.7,
+  40.576, -73.735,
+  40.53, -73.967,
+  40.558, -73.955,
+  40.59, -73.836,
+  40.695, -73.87,
+  40.68, -73.90,
+  40.729, -73.93) %>% 
+        mutate(Borough = "Queens")
+
+p_brooklyn <-  tribble(
+  ~Lat, ~Lon,
+  40.74, -73.965,
+  40.71, -73.97,
+  40.695, -74.02,
+  40.65, -74.05,
+  40.55, -74.05,
+  40.558, -73.955,
+  40.59, -73.836,
+  40.695, -73.87,
+  40.68, -73.90,
+  40.729, -73.93) %>% 
+        mutate(Borough = "Brooklyn")
+
+p_staten <-  tribble(
+  ~Lat, ~Lon,
+  40.65, -74.05,
+  40.55, -74.05,
+  40.5, -74.26,
+  40.645, -74.19) %>% 
+        mutate(Borough = "Staten Island")
+
+NY_poly <- bind_rows(p_manhattan, p_bronx, p_queens, p_brooklyn, p_staten) %>%  
+    group_by(Borough) %>%
+    do(poly=select(., Lat, Lon) %>% Polygon()) %>%
+    rowwise() %>%
+    do(polys=Polygons(list(.$poly),.$Borough)) %>%
+    {SpatialPolygons(.$polys)}
+
+proj4string(NY_poly) = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+
+df<- data.frame(id = getSpPPolygonsIDSlots(NY_poly))
+row.names(df) <- getSpPPolygonsIDSlots(NY_poly)
+
+# creating a Spatial Object
+NY_polyDF = SpatialPolygonsDataFrame(NY_poly, data= df)
+boundaries <- NY_polyDF
+
+
+coord <- uber_raw_2014  
+coordinates(coord) = ~ Lat + Lon
+proj4string(coord) <- proj4string(boundaries)
+coord <- spTransform(coord, proj4string(boundaries))
+    
+coord_over_neibourhood <- over(coord, boundaries)
+
+data14_neigh <- bind_cols(uber_raw_2014, coord_over_neibourhood) 
+
+
+# Observations that occur outside the borough are rejected from this analysis
+uber_raw_2014 <- data14_neigh%>%
+    rename(Borough = id) %>% 
+    filter(!is.na(Borough)) 
+
+```
+The new dataset we will use from now on is the "uber_raw_2014". It differs from the previous one because it only contains pickups registered inside one of the 5 boroughs of NYC.
+As you can notice,in fact, the number of data we are now working with is lower than before
+
+```{r}
+head(uber_raw_2014)
+nrow(uber_raw_2014)
+```
+
+## Converting data in UTM coordinates
+We now convert the coordinate system in UTM coordinates (expressed in meters). This trick will allow us to perform better density clustering.
+
+```{r, message=FALSE,warning=FALSE}
+uber_utm <- uber_raw_2014
+
+coordinates(uber_utm) <- c("Lon", "Lat")
+proj4string(uber_utm) <- CRS("+proj=longlat +datum=WGS84")
+
+res <- spTransform(uber_utm, CRS("+proj=utm +zone=18 ellps=WGS84"))
+```
+## Density cluster
+When trying to cluster geo data, the first idea may be to use Hierarchical Clustering. To do this you have to make a distance matrix first. However our dataset contains ~4 milions rows, which implies that we would have to build a 4M x 4M matrix (yes it is symmetric, but still it would contain too many elements!).
+
+A smarter idea is to use use the UTM coordinates (expressed in meters) and cluster data in 50x50 meters block.
+Basically we divide each bourough in blocks of size 50 m x 50 m and count the number of pickups occured at the interested time in each of the blocks.
+
+By doing that we cluster the density of observations inside of each block (it is a good approximation since the average size of a New York block is 80 m × 274 m).
+
+```{r}
+uber_utm <- data.frame(uber_raw_2014$Lon, uber_raw_2014$Lat,
+                            res$Lon, res$Lat, res$Borough, res$hour, res$dayofweek)%>%
+  
+    mutate(Lon = uber_raw_2014.Lon,
+           Lat = uber_raw_2014.Lat,
+           Lon_utm = res.Lon, 
+           Lat_utm = res.Lat,
+           Borough = res.Borough,
+           Hour = res.hour,
+           Weekday = res.dayofweek )  %>%
+  
+    select(Lon:Weekday) %>% 
+  
+  # Here is where the clustering happens: the integer division gives the same result for close observations
+    mutate(Lon50m = Lon_utm %/% 50,
+           Lat50m = Lat_utm %/% 50) %>% 
+    group_by(Lon50m, Lat50m) %>% 
+  
+  # From now on the variables Lon and Lat will describe the coordinates of each centroid
+    mutate(Lon = mean(Lon),
+           Lat = mean(Lat),
+           Lon_utm = mean(Lon_utm),
+           Lat_utm = mean(Lat_utm)) %>% ungroup()
+    
+head(uber_utm)
+```
+
+## Events' locations
+We are now almost ready to plot the final locations of events occured during night weekends in NYC.
+The variables "Lon" and "Lat" now represents the centroid's coordinates associated to each data item.
+We just have to group the dataset by "Lon" and "Lat" and count the number of items.
+
+We will only consider the top 30 spots and plot them using the "leaflet" package.
+As described above, we will consider observations occured during between 12 PM and 3 AM during the weekends.
+
+```{r}
+Event_place <- uber_utm %>% 
+    filter( Hour %in% c ("0","1","2") ,
+            Weekday %in% c ("sab", "dom", "lun")) %>% 
+    group_by(Lon, Lat) %>% 
+    tally() %>% 
+    arrange(desc(n))
+```
+
+## Event Location Plot
+Let us now plot the top 30 spots where a party/event may have occured in NYC.
+
+```{r Party Maps, error=FALSE, message=FALSE}
+
+plot_party <- Event_place %>% 
+    head(30) %>% 
+    leaflet() %>%
+    addTiles %>%
+    setView(lng = -73.98, lat= 40.733, zoom = 13) %>% 
+    addMarkers()  
+plot_party
+```
+
+
+From the above map we identify 2 different areas of interest: let us focus on that by plotting a more datailed map of them.
+
+### Party - Chelsea and Meatpacking District
+
+There is a big cluster of pickup spots between 12th St to 14th St and from Hudson to Washington St.
+
+1. 16th St and 9th Av
+2. Both Corners of 10Av and 17 and 18 St
+3. Jane St and West St
+4. 14th St and 8th Av
+
+```{r Party Chelsea, error=FALSE, message=FALSE, echo=FALSE}
+plot_party <- Event_place %>% 
+    head(30) %>% 
+    leaflet() %>%
+    addTiles %>%
+    setView(lng = -74.004, lat= 40.7415, zoom = 15) %>% 
+    addMarkers()  
+plot_party
+```
+
+### Party - East Village and Lower East Side
+
+There are 2 well defined clusters in East Village aswell
+
+1. Between Houston and Delancy Street and between Bowey and Ludlow St
+2. Between Broadway and Lafayette and betwen Bond and 4th Street
+
+```{r Party Downtown, error=FALSE, message=FALSE, echo=FALSE}
+plot_downtown <- Event_place %>% 
+    head(30) %>% 
+    leaflet() %>%
+    addTiles() %>%
+    addProviderTiles("Hydda.Full") %>%
+    setView(lng = -73.993, lat= 40.724, zoom = 15) %>% 
+    addMarkers()  
+plot_downtown
+```
+This results are not surprising: East Village and Greenwhich Village are in fact the most famous places for nightlife in NYC, with lots of clubs and bars for young people.
+Many websitees suggest these areas as the most interesting ones for the nightlife: we report here an article from "Business Insider" https://www.businessinsider.com/map-the-best-bars-in-new-york-city-are-in-these-neighborhoods-2013-10?IR=T                                                                              
+
+It is interesting to notice that almost all of the first 30 spots lay in Manahttan: once again we expected this kind of result.
+It is knonw in fact that the richest people in NYC live in the borough of Manahattan and it is reasonable to believe that thay are the ones who can afford and prefer Uber to other public transports.
+
+
+# Conclusion
+This work was divided in 2 parts: in the first part we performed Data Visualization and tried to answer a few questions about the behaviour of people in NYC.
+
+In the second part we performed Density Clustering in order to spot the most probable places for events and parties during the weekend's nights.
+
+To sum up we say that altough a conspicuous amount of work had to be done on the dataset in order to extract more useful information for the analysis, we showed how from these data we can understand and study the beahviour of new yorkers.
+
+We hope that a better understanding of the demand of uber pickups will Uber bulding a stronger and more efficient network.
+
+
